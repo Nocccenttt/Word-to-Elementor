@@ -137,7 +137,6 @@ class WTE_Admin_Page {
 				</div>
 			<?php endif; ?>
 
-			
 
 			<hr />
 
@@ -176,7 +175,16 @@ class WTE_Admin_Page {
 						</th>
 						<td>
 							<input type="file" id="wte_bulk_docx" name="wte_bulk_docx[]" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple required />
-							<p class="description"><?php esc_html_e( 'Select as many .docx files as you want to process. The Heading 1 in each document becomes that page’s title unless a title override is used in the document workflow.', 'word-to-elementor-wf' ); ?></p>
+							<p class="description"><?php esc_html_e( 'Select as many .docx files as you want to process. The uploaded filename (without the .docx extension) becomes that page’s title.', 'word-to-elementor-wf' ); ?></p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row">
+							<label for="wte_bulk_parent_page"><?php esc_html_e( 'Parent page', 'word-to-elementor-wf' ); ?></label>
+						</th>
+						<td>
+							<input type="text" class="regular-text" id="wte_bulk_parent_page" name="wte_bulk_parent_page" value="" />
+							<p class="description"><?php esc_html_e( 'Enter the exact title of the existing WordPress page to use as the parent. Leave blank for no parent.', 'word-to-elementor-wf' ); ?></p>
 						</td>
 					</tr>
 					<tr>
@@ -283,6 +291,24 @@ class WTE_Admin_Page {
 			: '';
 
 		$publish_immediately = ! empty( $_POST['wte_bulk_publish'] );
+		$parent_title        = isset( $_POST['wte_bulk_parent_page'] )
+			? sanitize_text_field( wp_unslash( $_POST['wte_bulk_parent_page'] ) )
+			: '';
+		$parent_id           = 0;
+
+		if ( '' !== $parent_title ) {
+			$parent_pages = get_posts( array(
+				'post_type'              => 'page',
+				'post_status'            => 'any',
+				'title'                  => $parent_title,
+				'posts_per_page'         => 1,
+				'fields'                 => 'ids',
+			) );
+			if ( empty( $parent_pages ) ) {
+				throw new Exception( sprintf( __( 'Parent page "%s" was not found.', 'word-to-elementor-wf' ), $parent_title ) );
+			}
+			$parent_id = (int) $parent_pages[0];
+		}
 
 		$format_options = array(
 			'bold_phone_links'      => ! empty( $_POST['wte_bulk_bold_phone_links'] ),
@@ -293,6 +319,7 @@ class WTE_Admin_Page {
 		);
 
 		$parser  = new WTE_Docx_Parser();
+		$filler  = new WTE_Template_Filler( $format_options );
 		$creator = new WTE_Page_Creator();
 		$pages   = array();
 		$errors  = array();
@@ -300,7 +327,7 @@ class WTE_Admin_Page {
 
 		foreach ( $_FILES['wte_bulk_docx']['tmp_name'] as $i => $tmp_path ) {
 			$name = isset( $_FILES['wte_bulk_docx']['name'][ $i ] )
-				? sanitize_file_name( wp_unslash( $_FILES['wte_bulk_docx']['name'][ $i ] ) )
+				? sanitize_text_field( wp_unslash( $_FILES['wte_bulk_docx']['name'][ $i ] ) )
 				: 'Document ' . ( $i + 1 );
 
 			try {
@@ -322,9 +349,12 @@ class WTE_Admin_Page {
 					throw new Exception( __( 'The document is missing a Heading 1 page title.', 'word-to-elementor-wf' ) );
 				}
 
-				$filler = new WTE_Template_Filler( $format_options );
 				$filled = $filler->fill( $outline );
-				$post_id = $creator->create( $filled, $outline['title'], $publish_immediately );
+				$page_title = sanitize_text_field( pathinfo( $name, PATHINFO_FILENAME ) );
+				$post_id = $creator->create( $filled, $page_title, $publish_immediately );
+				if ( $parent_id ) {
+					wp_update_post( array( 'ID' => $post_id, 'post_parent' => $parent_id ) );
+				}
 
 				$elementor_url = '';
 				if ( class_exists( '\Elementor\Plugin' ) ) {
@@ -332,7 +362,7 @@ class WTE_Admin_Page {
 				}
 
 				$pages[] = array(
-					'title'         => $outline['title'],
+					'title'         => get_the_title( $post_id ),
 					'edit_url'      => get_edit_post_link( $post_id, 'raw' ),
 					'elementor_url' => $elementor_url,
 				);
@@ -407,7 +437,8 @@ class WTE_Admin_Page {
 		}
 
 		$override   = isset( $_POST['wte_page_title'] ) ? sanitize_text_field( wp_unslash( $_POST['wte_page_title'] ) ) : '';
-		$page_title = '' !== $override ? $override : $outline['title'];
+		$filename_title = sanitize_text_field( pathinfo( $name, PATHINFO_FILENAME ) );
+		$page_title = '' !== $override ? $override : $filename_title;
 
 		$format_words = isset( $_POST['wte_format_words'] )
 			? sanitize_text_field( wp_unslash( $_POST['wte_format_words'] ) )
